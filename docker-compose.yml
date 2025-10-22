@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  performance-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: performance-monitor
+    restart: unless-stopped
+    volumes:
+      # Mount Docker socket for monitoring containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount configuration file
+      - ./config.json:/app/config.json:ro
+      # Mount logs directory
+      - ./logs:/app/logs
+      # Mount proc and sys for system monitoring
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+    privileged: true  # Required for system monitoring
+    networks:
+      - monitoring
+    # Optional: Add resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  # Optional: Add a log management service
+  log-rotate:
+    image: blacklabelops/logrotate
+    container_name: monitor-log-rotate
+    volumes:
+      - ./logs:/logs
+      - ./logrotate.conf:/etc/logrotate.conf:ro
+    restart: unless-stopped
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
