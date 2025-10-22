@@ -105,9 +105,9 @@ STAGING_SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY-----
 3. **Push ke main branch** → Otomatis deploy ke production
 
 ```bash
-git clone https://github.com/your-username/performance-monitor.git
+git clone https://github.com/denisetiya/rust-server-monitoring.git
 cd performance-monitor
-git remote add upstream https://github.com/original-owner/performance-monitor.git
+git remote add upstream https://github.com/original-owner/rust-server-monitoring.git
 
 # Set up environment
 cp .env.example .env
@@ -141,7 +141,7 @@ docker-compose up -d
 curl -fsSL https://raw.githubusercontent.com/your-username/performance-monitor/main/server-setup.sh | bash
 
 # Atau download dan jalankan manual
-wget https://raw.githubusercontent.com/your-username/performance-monitor/main/server-setup.sh
+wget https://raw.githubusercontent.com/your-username/rust-server-monitoring/main/server-setup.sh
 chmod +x server-setup.sh
 ./server-setup.sh
 ```
@@ -161,7 +161,7 @@ sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-
 sudo chmod +x /usr/local/bin/docker-compose
 
 # Clone repository
-git clone https://github.com/your-username/performance-monitor.git
+git clone https://github.com/denisetiya/rust-server-monitoring.git
 cd performance-monitor
 
 # Deploy
@@ -324,10 +324,10 @@ SYSTEM STATUS - 2024-01-15 10:30:45
    Total Containers: 4
 
    Top CPU Containers:
-   1. app-lakukan-web: 25.3% CPU
-   2. web-profile_litespeed_1: 12.1% CPU
-   3. web-profile_mysql_1: 5.2% CPU
-   4. web-profile_phpmyadmin_1: 2.6% CPU
+   1. app-web: 25.3% CPU
+   2. web-profile: 12.1% CPU
+   3. mysql_1: 5.2% CPU
+   4. phpmyadmin_1: 2.6% CPU
 
 ============================================================
 ```
