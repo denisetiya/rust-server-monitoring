@@ -74,6 +74,8 @@ Pipeline otomatis yang berjalan pada setiap push/PR:
 
 #### GitHub Secrets
 
+**📋 Lihat daftar lengkap secrets yang dibutuhkan:** [GITHUB_SECRETS.md](GITHUB_SECRETS.md)
+
 Set up secrets di GitHub repository settings:
 
 ```bash
@@ -84,13 +86,15 @@ PROD_PORT=22
 PROD_SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 
-# Staging Server  
+# Staging Server
 STAGING_HOST=staging-server.com
 STAGING_USER=deploy
 STAGING_PORT=22
 STAGING_SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 ```
+
+📖 **Dokumentasi lengkap setup secrets:** [GITHUB_SECRETS.md](GITHUB_SECRETS.md)
 
 ## 🐳 Docker Deployment
 
@@ -438,8 +442,8 @@ docker-compose logs -f performance-monitor
 
 ```bash
 # Setup development environment
-git clone https://github.com/your-username/performance-monitor.git
-cd performance-monitor
+git clone https://github.com/denisetiya/rust-server-monitoring.git
+cd rust-server-monitoring
 cargo build
 
 # Run tests
