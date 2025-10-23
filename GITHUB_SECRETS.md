@@ -17,8 +17,8 @@ Berikut adalah daftar lengkap GitHub Secrets yang perlu diatur di repository And
 |-------------|-------------|---------------|
 | `PROD_HOST` | IP address atau domain production server | `192.168.1.100` atau `your-server.com` |
 | `PROD_USER` | Username untuk SSH ke production server | `deploy` atau `ubuntu` |
+| `PROD_PASSWORD` | Password untuk SSH ke production server | `your-secure-password` |
 | `PROD_PORT` | Port SSH (default: 22) | `22` |
-| `PROD_SSH_KEY` | Private SSH key untuk production server | `-----BEGIN OPENSSH PRIVATE KEY-----\n...` |
 
 ### 🧪 Staging Server Secrets
 
@@ -26,8 +26,8 @@ Berikut adalah daftar lengkap GitHub Secrets yang perlu diatur di repository And
 |-------------|-------------|---------------|
 | `STAGING_HOST` | IP address atau domain staging server | `192.168.1.200` atau `staging.your-server.com` |
 | `STAGING_USER` | Username untuk SSH ke staging server | `deploy` atau `ubuntu` |
+| `STAGING_PASSWORD` | Password untuk SSH ke staging server | `your-secure-password` |
 | `STAGING_PORT` | Port SSH (default: 22) | `22` |
-| `STAGING_SSH_KEY` | Private SSH key untuk staging server | `-----BEGIN OPENSSH PRIVATE KEY-----\n...` |
 
 ### 📧 Email Configuration Secrets
 
@@ -51,46 +51,37 @@ Berikut adalah daftar lengkap GitHub Secrets yang perlu diatur di repository And
 | `SLACK_WEBHOOK` | Slack webhook URL untuk notifikasi | `https://hooks.slack.com/services/...` |
 | `DISCORD_WEBHOOK` | Discord webhook URL untuk notifikasi | `https://discord.com/api/webhooks/...` |
 
-## 🔑 SSH Key Setup
+## 🔑 SSH Password Setup
 
-### 1. Generate SSH Key Pair
+### 1. Setup Password Authentication di Server
 
-```bash
-# Generate SSH key untuk deployment
-ssh-keygen -t ed25519 -C "performance-monitor-deploy" -f ~/.ssh/performance-monitor
-
-# Ini akan membuat:
-# Private key: ~/.ssh/performance-monitor
-# Public key: ~/.ssh/performance-monitor.pub
-```
-
-### 2. Add Public Key ke Server
+Pastikan server Anda mengizinkan password authentication untuk SSH:
 
 ```bash
-# Copy public key ke server
-ssh-copy-id -i ~/.ssh/performance-monitor.pub user@server
+# Edit SSH configuration
+sudo nano /etc/ssh/sshd_config
 
-# Atau manual:
-cat ~/.ssh/performance-monitor.pub | ssh user@server "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+# Pastikan baris berikut tidak dikomentari dan bernilai yes:
+PasswordAuthentication yes
+ChallengeResponseAuthentication yes
+
+# Restart SSH service
+sudo systemctl restart sshd
 ```
 
-### 3. Add Private Key ke GitHub Secrets
+### 2. Add Password ke GitHub Secrets
 
-```bash
-# Tampilkan private key (copy seluruh output)
-cat ~/.ssh/performance-monitor
-```
+Buat password yang kuat untuk masing-masing environment dan tambahkan ke GitHub Secrets:
 
-Output akan seperti ini:
-```
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAADzc2gtZW
-QyNTUxOQAAACBpVQ5QJH8wE8K9vN5qL9mX9vN5qL9mX9vN5qL9mX9vN5qL9mX9vN5qL9mX9vN5qL9mX9
-...
------END OPENSSH PRIVATE KEY-----
-```
+| Secret Name | Value |
+|-------------|-------|
+| `PROD_PASSWORD` | Password untuk production server |
+| `STAGING_PASSWORD` | Password untuk staging server |
 
-Copy seluruh output dan paste ke GitHub Secrets dengan nama `PROD_SSH_KEY` atau `STAGING_SSH_KEY`.
+**Catatan Keamanan:**
+- Gunakan password yang kuat (minimal 16 karakter, kombinasi huruf, angka, dan simbol)
+- Jangan gunakan password yang sama untuk production dan staging
+- Pertimbangkan untuk menggunakan password generator
 
 ## 📧 Email Setup (Gmail)
 
@@ -124,10 +115,10 @@ Password yang dihasilkan akan seperti: `abcd efgh ijkl mnop`
 
 ```bash
 # Test SSH ke production server
-ssh -i ~/.ssh/performance-monitor deploy@PROD_HOST
+ssh deploy@PROD_HOST
 
 # Test SSH ke staging server
-ssh -i ~/.ssh/performance-monitor deploy@STAGING_HOST
+ssh deploy@STAGING_HOST
 ```
 
 ### 2. Test Email Configuration
@@ -153,12 +144,13 @@ cargo build --release
 
 ## 🛡️ Security Best Practices
 
-### SSH Key Security
+### SSH Password Security
 
-- ✅ Gunakan SSH key yang berbeda untuk production dan staging
-- ✅ Set permissions: `chmod 600 ~/.ssh/performance-monitor`
-- ✅ Limit SSH key usage hanya untuk deployment user
-- ✅ Gunakan `ed25519` algorithm (lebih aman dari RSA)
+- ✅ Gunakan password yang berbeda untuk production dan staging
+- ✅ Gunakan password yang kuat (minimal 16 karakter)
+- ✅ Gunakan password generator untuk membuat password acak
+- ✅ Limit user access hanya untuk deployment
+- ⚠️ Password authentication kurang aman dibandingkan SSH key
 
 ### Email Security
 
@@ -180,14 +172,14 @@ cargo build --release
 
 ```bash
 # Debug SSH connection
-ssh -v -i ~/.ssh/performance-monitor deploy@server
+ssh -v deploy@server
 
-# Check SSH key permissions
-ls -la ~/.ssh/performance-monitor
+# Test password authentication manually
+ssh -o PreferredAuthentications=password deploy@server
 
-# Fix permissions jika needed
-chmod 600 ~/.ssh/performance-monitor
-chmod 644 ~/.ssh/performance-monitor.pub
+# Check SSH configuration
+sudo nano /etc/ssh/sshd_config
+# Pastikan PasswordAuthentication yes
 ```
 
 ### Email Issues
@@ -206,8 +198,9 @@ chmod 644 ~/.ssh/performance-monitor.pub
 
 ## 📝 Checklist Sebelum Deployment
 
-- [ ] SSH keys generated dan added ke server
-- [ ] SSH private keys added ke GitHub Secrets
+- [ ] Password authentication enabled di server
+- [ ] Password yang kuat dibuat untuk masing-masing environment
+- [ ] Password secrets added ke GitHub Secrets
 - [ ] Email 2FA enabled dan App Password created
 - [ ] Email secrets added ke GitHub Secrets
 - [ ] Server Docker daemon running
@@ -221,7 +214,7 @@ chmod 644 ~/.ssh/performance-monitor.pub
 
 ### Regular Tasks
 
-1. **Monthly**: Rotate SSH keys jika needed
+1. **Monthly**: Rotate passwords untuk keamanan
 2. **Quarterly**: Update App passwords
 3. **As needed**: Update server credentials
 4. **Annually**: Audit semua secrets

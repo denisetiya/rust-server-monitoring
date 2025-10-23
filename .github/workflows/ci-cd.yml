@@ -144,7 +144,7 @@ jobs:
       with:
         host: ${{ secrets.PROD_HOST }}
         username: ${{ secrets.PROD_USER }}
-        key: ${{ secrets.PROD_SSH_KEY }}
+        password: ${{ secrets.PROD_PASSWORD }}
         port: ${{ secrets.PROD_PORT || 22 }}
         script: |
           # Set variables
@@ -197,7 +197,7 @@ jobs:
       with:
         host: ${{ secrets.STAGING_HOST }}
         username: ${{ secrets.STAGING_USER }}
-        key: ${{ secrets.STAGING_SSH_KEY }}
+        password: ${{ secrets.STAGING_PASSWORD }}
         port: ${{ secrets.STAGING_PORT || 22 }}
         script: |
           # Set variables
