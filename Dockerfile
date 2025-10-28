@@ -1,7 +1,7 @@
 # Multi-stage build for Rust performance monitoring application
 
 # Stage 1: Build stage
-FROM rust:1.75-slim as builder
+FROM rust:1.82-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -45,8 +45,8 @@ WORKDIR /app
 # Copy binary from builder stage
 COPY --from=builder /app/target/release/performance-monitor /usr/local/bin/performance-monitor
 
-# Copy configuration file
-COPY config.json /app/config.json
+# Copy example configuration file (will be overridden by mounted config)
+COPY config.json.example /app/config.json.example
 
 # Create log directory
 RUN mkdir -p /app/logs && chown -R monitor:monitor /app
@@ -60,9 +60,9 @@ USER monitor
 # Set environment variables
 ENV RUST_LOG=info
 
-# Health check
+# Health check - check if the process is running and logs are being written
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD /usr/local/bin/performance-monitor --status || exit 1
+    CMD pgrep -f performance-monitor > /dev/null && test -f /app/logs/monitoring.log || exit 1
 
-# Default command
-CMD ["/usr/local/bin/performance-monitor", "--continuous"]
+# Default command - run continuous monitoring
+CMD ["/usr/local/bin/performance-monitor", "--continuous", "--config", "/app/config.json"]

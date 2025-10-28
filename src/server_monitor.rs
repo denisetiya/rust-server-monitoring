@@ -1,12 +1,13 @@
-use serde::{Deserialize, Serialize};
-use sysinfo::{System, SystemExt, CpuExt, DiskExt};
-use chrono::{DateTime, Utc};
 use crate::config::Config;
+use crate::timezone_utils;
+use chrono::{DateTime, FixedOffset, Utc};
 use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use sysinfo::{CpuExt, DiskExt, System, SystemExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStats {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<FixedOffset>,
     pub cpu_usage: f64,
     pub memory_usage: MemoryStats,
     pub disk_usage: DiskStats,
@@ -45,7 +46,7 @@ pub struct SystemInfo {
     pub cpu_count: usize,
     pub cpu_brand: String,
     pub total_memory: u64,
-    pub boot_time: DateTime<Utc>,
+    pub boot_time: DateTime<FixedOffset>,
 }
 
 pub struct ServerMonitor {
@@ -57,28 +58,25 @@ impl ServerMonitor {
     pub fn new(config: Config) -> Self {
         let mut system = System::new_all();
         system.refresh_all();
-        
-        Self {
-            system,
-            config,
-        }
+
+        Self { system, config }
     }
-    
+
     pub fn refresh(&mut self) {
         self.system.refresh_all();
     }
-    
+
     pub fn get_cpu_usage(&mut self) -> f64 {
         self.refresh();
         self.system.global_cpu_info().cpu_usage().into()
     }
-    
+
     pub fn get_memory_usage(&mut self) -> MemoryStats {
         self.refresh();
         let memory = self.system.total_memory();
         let used = self.system.used_memory();
         let available = self.system.available_memory();
-        
+
         MemoryStats {
             total: memory,
             used,
@@ -86,7 +84,7 @@ impl ServerMonitor {
             percent: (used as f64 / memory as f64) * 100.0,
         }
     }
-    
+
     pub fn get_disk_usage(&mut self) -> DiskStats {
         self.refresh();
         // Get root disk usage
@@ -94,7 +92,7 @@ impl ServerMonitor {
             let total = disk.total_space();
             let available = disk.available_space();
             let used = total - available;
-            
+
             DiskStats {
                 total,
                 used,
@@ -110,7 +108,7 @@ impl ServerMonitor {
             }
         }
     }
-    
+
     pub fn get_load_average(&self) -> LoadAverage {
         // For Linux systems, we can read from /proc/loadavg
         if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
@@ -123,7 +121,7 @@ impl ServerMonitor {
                 };
             }
         }
-        
+
         // Fallback values
         LoadAverage {
             one_min: 0.0,
@@ -131,41 +129,53 @@ impl ServerMonitor {
             fifteen_min: 0.0,
         }
     }
-    
+
     pub fn get_system_info(&self) -> SystemInfo {
-        let boot_time = DateTime::from_timestamp(self.system.boot_time() as i64, 0)
-            .unwrap_or_else(|| Utc::now());
-        
+        let boot_time_utc =
+            DateTime::from_timestamp(self.system.boot_time() as i64, 0).unwrap_or_else(Utc::now);
+        let boot_time_wib = timezone_utils::utc_to_wib(boot_time_utc);
+
         SystemInfo {
             hostname: self.system.name().unwrap_or_else(|| "Unknown".to_string()),
-            os: self.system.long_os_version().unwrap_or_else(|| "Unknown".to_string()),
-            kernel: self.system.kernel_version().unwrap_or_else(|| "Unknown".to_string()),
+            os: self
+                .system
+                .long_os_version()
+                .unwrap_or_else(|| "Unknown".to_string()),
+            kernel: self
+                .system
+                .kernel_version()
+                .unwrap_or_else(|| "Unknown".to_string()),
             cpu_count: self.system.cpus().len(),
-            cpu_brand: self.system.cpus()
+            cpu_brand: self
+                .system
+                .cpus()
                 .first()
                 .map(|cpu| cpu.brand().to_string())
                 .unwrap_or_else(|| "Unknown".to_string()),
             total_memory: self.system.total_memory(),
-            boot_time,
+            boot_time: boot_time_wib,
         }
     }
-    
+
     pub fn check_cpu_threshold(&mut self) -> (bool, f64) {
         let cpu_usage = self.get_cpu_usage();
         let threshold = self.config.monitoring.cpu_threshold;
-        
+
         if cpu_usage > threshold {
-            warn!("High CPU usage detected: {:.2}% (threshold: {:.2}%)", cpu_usage, threshold);
+            warn!(
+                "High CPU usage detected: {:.2}% (threshold: {:.2}%)",
+                cpu_usage, threshold
+            );
             (true, cpu_usage)
         } else {
             info!("CPU usage is normal: {:.2}%", cpu_usage);
             (false, cpu_usage)
         }
     }
-    
+
     pub fn get_full_stats(&mut self) -> ServerStats {
         ServerStats {
-            timestamp: Utc::now(),
+            timestamp: timezone_utils::now_wib(),
             cpu_usage: self.get_cpu_usage(),
             memory_usage: self.get_memory_usage(),
             disk_usage: self.get_disk_usage(),

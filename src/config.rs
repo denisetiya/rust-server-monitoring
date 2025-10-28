@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -24,6 +24,7 @@ pub struct EmailConfig {
     pub sender_email: String,
     pub sender_password: String,
     pub recipient_email: String,
+    pub daily_limit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,7 @@ impl Default for Config {
                 sender_email: String::new(),
                 sender_password: String::new(),
                 recipient_email: String::new(),
+                daily_limit: true,
             },
             logging: LoggingConfig {
                 level: "INFO".to_string(),
@@ -66,7 +68,7 @@ impl Config {
         let config: Config = serde_json::from_str(&content)?;
         Ok(config)
     }
-    
+
     #[allow(dead_code)]
     pub fn save_to_file(&self, path: &str) -> Result<()> {
         let content = serde_json::to_string_pretty(self)?;

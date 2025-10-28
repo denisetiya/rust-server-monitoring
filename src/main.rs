@@ -1,18 +1,19 @@
-use clap::{Arg, Command};
-use log::{info, error, warn};
-use env_logger::Env;
-use std::time::Duration;
 use anyhow::Result;
+use clap::{Arg, Command};
+use env_logger::Env;
+use log::{error, info, warn};
+use std::time::Duration;
 
 mod config;
-mod server_monitor;
 mod docker_monitor;
 mod email_notifier;
+mod server_monitor;
+mod timezone_utils;
 
 use config::Config;
-use server_monitor::ServerMonitor;
 use docker_monitor::DockerMonitor;
 use email_notifier::EmailNotifier;
+use server_monitor::ServerMonitor;
 
 struct PerformanceMonitor {
     config: Config,
@@ -30,11 +31,14 @@ impl PerformanceMonitor {
                 config
             }
             Err(e) => {
-                warn!("Failed to load config from {}: {}. Using default configuration.", config_path, e);
+                warn!(
+                    "Failed to load config from {}: {}. Using default configuration.",
+                    config_path, e
+                );
                 Config::default()
             }
         };
-        
+
         // Initialize monitors
         let server_monitor = ServerMonitor::new(config.clone());
         let docker_monitor = match DockerMonitor::new(config.clone()).await {
@@ -48,10 +52,10 @@ impl PerformanceMonitor {
             }
         };
         let email_notifier = EmailNotifier::new(config.clone());
-        
+
         info!("Performance Monitor initialized");
         info!("CPU Threshold: {}%", config.monitoring.cpu_threshold);
-        
+
         Ok(Self {
             config,
             server_monitor,
@@ -59,54 +63,84 @@ impl PerformanceMonitor {
             email_notifier,
         })
     }
-    
+
     async fn check_server_cpu(&mut self) -> (bool, f64) {
         info!("Checking server CPU usage...");
-        
+
         let (is_high, cpu_usage) = self.server_monitor.check_cpu_threshold();
-        
+
         if is_high {
             warn!("High CPU usage detected: {:.2}%", cpu_usage);
-            
-            // Get high CPU containers
-            let (_, high_cpu_containers) = self.docker_monitor
+
+            // Get all containers and high CPU containers
+            let all_containers = self
+                .docker_monitor
+                .get_container_stats()
+                .await
+                .unwrap_or_default();
+
+            let (_, high_cpu_containers) = self
+                .docker_monitor
                 .check_container_cpu_threshold(50.0)
                 .await
                 .unwrap_or((false, vec![]));
-            
-            // Send alert
-            let alert_sent = self.email_notifier.send_cpu_alert(cpu_usage, &high_cpu_containers).await;
+
+            // Send alert with both high CPU and all containers data
+            let alert_sent = self
+                .email_notifier
+                .send_cpu_alert(cpu_usage, &high_cpu_containers, &all_containers)
+                .await;
             if alert_sent {
                 info!("CPU alert email sent successfully");
             } else {
-                error!("Failed to send CPU alert email");
+                // Only log as error if email is enabled but failed to send
+                if self.email_notifier.is_enabled() {
+                    error!("Failed to send CPU alert email");
+                } else {
+                    info!("CPU alert logged successfully (email notifications disabled)");
+                }
             }
         } else {
             info!("Server CPU usage is normal: {:.2}%", cpu_usage);
         }
-        
+
         (is_high, cpu_usage)
     }
-    
+
     async fn check_container_cpu(&self) -> (bool, Vec<docker_monitor::ContainerStats>) {
         info!("Checking Docker container CPU usage...");
-        
-        match self.docker_monitor.check_container_cpu_threshold(self.config.monitoring.cpu_threshold).await {
+
+        match self
+            .docker_monitor
+            .check_container_cpu_threshold(self.config.monitoring.cpu_threshold)
+            .await
+        {
             Ok((is_high, high_cpu_containers)) => {
                 if is_high {
-                    warn!("High CPU usage detected in {} containers", high_cpu_containers.len());
-                    
+                    warn!(
+                        "High CPU usage detected in {} containers",
+                        high_cpu_containers.len()
+                    );
+
                     // Send alert
-                    let alert_sent = self.email_notifier.send_container_cpu_alert(&high_cpu_containers).await;
+                    let alert_sent = self
+                        .email_notifier
+                        .send_container_cpu_alert(&high_cpu_containers)
+                        .await;
                     if alert_sent {
                         info!("Container CPU alert email sent successfully");
                     } else {
-                        error!("Failed to send container CPU alert email");
+                        // Only log as error if email is enabled but failed to send
+                        if self.email_notifier.is_enabled() {
+                            error!("Failed to send container CPU alert email");
+                        } else {
+                            info!("Container CPU alert logged successfully (email notifications disabled)");
+                        }
                     }
                 } else {
                     info!("All containers have normal CPU usage");
                 }
-                
+
                 (is_high, high_cpu_containers)
             }
             Err(e) => {
@@ -115,88 +149,116 @@ impl PerformanceMonitor {
             }
         }
     }
-    
+
     async fn run_monitoring(&mut self) -> Result<bool> {
         info!("Starting monitoring check...");
-        
+
         // Check server CPU
         let (server_high, server_cpu) = self.check_server_cpu().await;
-        
+
         // Check container CPU
         let (container_high, high_containers) = self.check_container_cpu().await;
-        
+
         // Log summary
-        info!("Monitoring check completed. Server CPU: {:.2}%, High CPU containers: {}", 
-              server_cpu, high_containers.len());
-        
+        info!(
+            "Monitoring check completed. Server CPU: {:.2}%, High CPU containers: {}",
+            server_cpu,
+            high_containers.len()
+        );
+
         Ok(server_high || container_high)
     }
-    
+
     async fn print_status_summary(&mut self) -> Result<()> {
         let server_stats = self.server_monitor.get_full_stats();
-        let docker_stats = self.docker_monitor.get_container_stats().await.unwrap_or_default();
-        let docker_info = self.docker_monitor.get_docker_system_info().await.unwrap_or_default();
-        
+        let docker_stats = self
+            .docker_monitor
+            .get_container_stats()
+            .await
+            .unwrap_or_default();
+        let docker_info = self
+            .docker_monitor
+            .get_docker_system_info()
+            .await
+            .unwrap_or_default();
+
         println!("\n{}", "=".repeat(60));
-        println!("SYSTEM STATUS - {}", server_stats.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "SYSTEM STATUS - {}",
+            server_stats.timestamp.format("%Y-%m-%d %H:%M:%S")
+        );
         println!("{}", "=".repeat(60));
-        
+
         // Server status
         println!("\n🖥️  SERVER:");
         println!("   CPU Usage: {:.2}%", server_stats.cpu_usage);
         println!("   Memory Usage: {:.2}%", server_stats.memory_usage.percent);
         println!("   Disk Usage: {:.2}%", server_stats.disk_usage.percent);
-        
+
         // Docker status
         println!("\n🐳 DOCKER:");
         println!("   Running Containers: {}", docker_stats.len());
         println!("   Total Containers: {}", docker_info.containers);
-        
+
         if !docker_stats.is_empty() {
             println!("\n   Top CPU Containers:");
             for (i, container) in docker_stats.iter().take(5).enumerate() {
-                println!("   {}. {}: {:.2}% CPU", i + 1, container.name, container.cpu_usage);
+                println!(
+                    "   {}. {}: {:.2}% CPU",
+                    i + 1,
+                    container.name,
+                    container.cpu_usage
+                );
             }
         }
-        
+
         println!("\n{}", "=".repeat(60));
-        
+
         Ok(())
     }
-    
+
     async fn run_continuous(&mut self) -> Result<()> {
         let interval = Duration::from_secs(self.config.monitoring.check_interval);
-        
-        info!("Starting continuous monitoring with {:?} interval...", interval);
-        
+
+        info!(
+            "Starting continuous monitoring with {:?} interval...",
+            interval
+        );
+
+        // Log that we're entering the continuous loop
+        info!("Entering continuous monitoring loop");
+
         loop {
             match self.run_monitoring().await {
                 Ok(alert_triggered) => {
                     if alert_triggered {
-                        println!("⚠️  High CPU usage detected! Check your email for alerts.");
+                        info!("⚠️  High CPU usage detected! Check your email for alerts.");
                     } else {
-                        println!("✅ All systems normal.");
+                        info!("✅ All systems normal.");
                     }
                 }
                 Err(e) => {
                     error!("Error during monitoring check: {}", e);
+                    // Don't exit on error, just log it and continue
                 }
             }
-            
+
+            info!("Sleeping for {:?} before next check", interval);
             tokio::time::sleep(interval).await;
+            info!("Waking up for next monitoring check");
         }
     }
-    
+
     async fn test_email(&self) -> Result<()> {
         info!("Testing email configuration...");
-        
+
         let success = self.email_notifier.send_test_email().await;
         if success {
             println!("✅ Test email sent successfully!");
         } else {
             println!("❌ Failed to send test email. Check your configuration.");
         }
-        
+
         Ok(())
     }
 }
@@ -213,46 +275,69 @@ async fn main() -> Result<()> {
                 .long("config")
                 .value_name("FILE")
                 .help("Configuration file path")
-                .default_value("config.json")
+                .default_value("config.json"),
         )
         .arg(
             Arg::new("status")
                 .short('s')
                 .long("status")
                 .help("Show current system status")
-                .action(clap::ArgAction::SetTrue)
+                .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("test-email")
                 .short('t')
                 .long("test-email")
                 .help("Test email configuration")
-                .action(clap::ArgAction::SetTrue)
+                .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("continuous")
                 .short('r')
                 .long("continuous")
                 .help("Run continuous monitoring")
-                .action(clap::ArgAction::SetTrue)
+                .action(clap::ArgAction::SetTrue),
         )
         .get_matches();
-    
+
     // Initialize logger
     env_logger::init_from_env(Env::default().default_filter_or("info"));
-    
+
     let config_path = matches.get_one::<String>("config").unwrap();
-    
+    info!("Using config file: {}", config_path);
+
     // Initialize monitor
-    let mut monitor = PerformanceMonitor::new(config_path).await?;
-    
+    info!("Initializing performance monitor...");
+    let mut monitor = match PerformanceMonitor::new(config_path).await {
+        Ok(monitor) => {
+            info!("Performance monitor initialized successfully");
+            monitor
+        }
+        Err(e) => {
+            error!("Failed to initialize performance monitor: {}", e);
+            return Err(e);
+        }
+    };
+
     if matches.get_flag("test-email") {
+        info!("Running email test...");
         monitor.test_email().await?;
     } else if matches.get_flag("status") {
+        info!("Running status check...");
         monitor.print_status_summary().await?;
     } else if matches.get_flag("continuous") {
-        monitor.run_continuous().await?;
+        info!("Starting continuous monitoring mode...");
+        match monitor.run_continuous().await {
+            Ok(_) => {
+                info!("Continuous monitoring completed normally");
+            }
+            Err(e) => {
+                error!("Continuous monitoring failed: {}", e);
+                return Err(e);
+            }
+        }
     } else {
+        info!("Running single monitoring check...");
         // Run single monitoring check
         match monitor.run_monitoring().await {
             Ok(alert_triggered) => {
@@ -264,9 +349,11 @@ async fn main() -> Result<()> {
             }
             Err(e) => {
                 error!("Error during monitoring: {}", e);
+                return Err(e);
             }
         }
     }
-    
+
+    info!("Application completed successfully");
     Ok(())
 }

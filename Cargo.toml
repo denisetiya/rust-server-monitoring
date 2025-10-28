@@ -12,7 +12,7 @@ lettre = "0.11"
 sysinfo = "0.29"
 bollard = "0.16"
 futures-util = "0.3"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
 log = "0.4"
 env_logger = "0.10"
 clap = { version = "4.0", features = ["derive"] }

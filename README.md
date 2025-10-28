@@ -7,6 +7,9 @@ Sistem monitoring untuk Docker container dan server yang akan mengirimkan email 
 - ✅ Monitoring penggunaan CPU server real-time
 - ✅ Monitoring penggunaan CPU per Docker container
 - ✅ Email alert ketika CPU usage > 80%
+- ✅ **Daily email limit** - maksimal 1 email per hari untuk mencegah spam
+- ✅ **Detailed logging** dengan timestamp dan container details
+- ✅ **Fixed CPU calculation bug** - CPU usage tidak lagi selalu 0%
 - ✅ Menampilkan container dengan penggunaan CPU tertinggi
 - ✅ Konfigurasi yang mudah disesuaikan
 - ✅ Docker container deployment
@@ -239,30 +242,71 @@ DEPLOY_DIR=~/performance-monitor
 BACKUP_DIR=~/performance-monitor-backups
 ```
 
-### config.json
+### 🔐 Configuration Security
 
-```json
-{
-  "monitoring": {
-    "cpu_threshold": 80,
-    "check_interval": 300,
-    "docker_stats_timeout": 10
-  },
-  "email": {
-    "enabled": true,
-    "smtp_server": "smtp.gmail.com",
-    "smtp_port": 587,
-    "sender_email": "your-email@gmail.com",
-    "sender_password": "your-app-password",
-    "recipient_email": "alert-email@example.com"
-  },
-  "logging": {
-    "level": "INFO",
-    "file": "monitoring.log",
-    "max_size_mb": 10,
-    "backup_count": 5
-  }
-}
+**⚠️ IMPORTANT:** `config.json` contains sensitive information and should NEVER be committed to version control!
+
+#### Setup Configuration
+
+1. **Copy example configuration:**
+   ```bash
+   cp config.json.example config.json
+   ```
+
+2. **Edit with your actual credentials:**
+   ```bash
+   nano config.json
+   ```
+
+3. **Configuration structure:**
+   ```json
+   {
+     "monitoring": {
+       "cpu_threshold": 80,
+       "check_interval": 300,
+       "docker_stats_timeout": 10
+     },
+     "email": {
+       "enabled": true,
+       "smtp_server": "smtp.gmail.com",
+       "smtp_port": 587,
+       "sender_email": "your-email@gmail.com",
+       "sender_password": "your-app-password",
+       "recipient_email": "alert-email@example.com",
+       "daily_limit": true
+     },
+     "logging": {
+       "level": "INFO",
+       "file": "monitoring.log",
+       "max_size_mb": 10,
+       "backup_count": 5
+     }
+   }
+   ```
+   
+   **New Email Configuration Options:**
+   - `daily_limit`: (boolean) Batasi email alert maksimal 1x per hari untuk mencegah spam
+   - Set `daily_limit: false` jika ingin email dikirim setiap kali ada alert
+
+#### Multi-Environment Configuration
+
+- **Development:** `config.json` (local use only, ignored by git)
+- **Production:** `config.production.json` (generated from GitHub secrets)
+- **Staging:** `config.staging.json` (based on config.json.example)
+
+#### CI/CD Configuration Management
+
+The CI/CD pipeline automatically creates production configuration from GitHub secrets:
+
+```yaml
+# GitHub Secrets Setup
+EMAIL_ENABLED=true
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SENDER_EMAIL=your-email@gmail.com
+SENDER_PASSWORD=your-app-password
+RECIPIENT_EMAIL=alert@example.com
+LOG_LEVEL=INFO
 ```
 
 ## 🔄 Deployment Commands
@@ -429,6 +473,44 @@ docker-compose logs -f performance-monitor
 - Deployment success/failure alerts
 - Rollback capabilities
 - Health checks
+
+## 🆕 Recent Improvements (v0.2.0)
+
+### Bug Fixes
+- **Fixed CPU Usage Bug**: CPU usage tidak lagi selalu menampilkan 0%
+- **Proper CPU Calculation**: Implementasi perhitungan CPU yang akurat menggunakan Docker Stats API
+
+### New Features
+- **Daily Email Limit**: Email alert maksimal 1x per hari untuk mencegah spam
+- **Enhanced Logging**: Log detail dengan timestamp dan informasi container
+- **Top CPU Containers**: Log menampilkan 10 container dengan CPU usage tertinggi
+- **High CPU Detection**: Log khusus untuk containers dengan CPU > 50%
+
+### Configuration Updates
+- Added `daily_limit` field to email configuration
+- Backward compatible with existing configurations
+
+### How Daily Limit Works
+1. Saat high CPU detected, sistem selalu log detail ke file
+2. Cek apakah sudah kirim email hari ini via `last_alert_date.txt`
+3. Jika belum, kirim email dan update tanggal
+4. Jika sudah, skip email tapi tetap log
+5. Reset keesokan hari
+
+### Logging Improvements
+```
+=== CPU USAGE ALERT DETAILS ===
+Alert Time: 2025-10-23 12:28:10 UTC
+Server CPU Usage: 20.90%
+Total Running Containers: 5
+
+=== TOP CPU CONSUMING CONTAINERS ===
+1. nginx-proxy [a1b2c3d4e5f6]: 15.2% CPU, 128.5 MB RAM (12.1%)
+2. redis-cache [f6e5d4c3b2a1]: 8.7% CPU, 64.2 MB RAM (6.4%)
+...
+```
+
+For detailed information, see [CPU_MONITORING_IMPROVEMENTS.md](./CPU_MONITORING_IMPROVEMENTS.md)
 
 ## 🤝 Contributing
 

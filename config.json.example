@@ -1,0 +1,21 @@
+{
+  "monitoring": {
+    "cpu_threshold": 80,
+    "check_interval": 300,
+    "docker_stats_timeout": 10
+  },
+  "email": {
+    "enabled": false,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "your-email@gmail.com",
+    "sender_password": "your-app-password",
+    "recipient_email": "alert-email@example.com"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "monitoring.log",
+    "max_size_mb": 10,
+    "backup_count": 5
+  }
+}

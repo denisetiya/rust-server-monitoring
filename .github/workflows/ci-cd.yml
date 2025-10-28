@@ -12,6 +12,9 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+permissions:
+  contents: read
+
 jobs:
   # Test and Build
   test:
@@ -21,6 +24,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
       
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -28,7 +33,7 @@ jobs:
         components: rustfmt, clippy
         
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -49,7 +54,7 @@ jobs:
       run: cargo build --release
       
     - name: Upload binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: performance-monitor-binary
         path: target/release/performance-monitor
@@ -60,9 +65,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     
+    permissions:
+      contents: read
+      
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
       
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
@@ -72,11 +82,34 @@ jobs:
         format: 'sarif'
         output: 'trivy-results.sarif'
         
-    - name: Upload Trivy scan results
-      uses: github/codeql-action/upload-sarif@v2
+    - name: Display Trivy scan results
+      if: always()
+      run: |
+        echo "## Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
+        if [ -f "trivy-results.sarif" ]; then
+          echo "### SARIF file generated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "The SARIF file has been uploaded as an artifact for detailed analysis." >> $GITHUB_STEP_SUMMARY
+          
+          # Display summary if jq is available
+          if command -v jq &> /dev/null; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Summary of findings:" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '.runs[0].results | length' trivy-results.sarif | xargs echo "Total vulnerabilities found:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "### No SARIF file generated" >> $GITHUB_STEP_SUMMARY
+          echo "This might indicate no vulnerabilities were found or there was an error." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+    - name: Upload Trivy scan results as artifact
+      uses: actions/upload-artifact@v4
       if: always()
       with:
-        sarif_file: 'trivy-results.sarif'
+        name: trivy-security-scan
+        path: trivy-results.sarif
+        retention-days: 30
 
   # Docker Build and Push
   build-and-push:
@@ -92,7 +125,16 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
       
+    - name: Verify Cargo.lock exists
+      run: |
+        echo "Checking if Cargo.lock exists..."
+        ls -la Cargo.lock
+        echo "Cargo.lock content (first 10 lines):"
+        head -10 Cargo.lock
+        
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       
@@ -116,6 +158,46 @@ jobs:
           type=sha
           latest
           
+    - name: Create production config file
+      run: |
+        cat > config.production.json << EOF
+        {
+          "monitoring": {
+            "cpu_threshold": 80,
+            "check_interval": 300,
+            "docker_stats_timeout": 10
+          },
+          "email": {
+            "enabled": true,
+            "smtp_server": "${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}",
+            "smtp_port": ${{ secrets.SMTP_PORT || '587' }},
+            "sender_email": "${{ secrets.SENDER_EMAIL || 'your-email@gmail.com' }}",
+            "sender_password": "${{ secrets.SENDER_PASSWORD || 'your-app-password' }}",
+            "recipient_email": "${{ secrets.RECIPIENT_EMAIL || 'alert-email@example.com' }}"
+          },
+          "logging": {
+            "level": "${{ secrets.LOG_LEVEL || 'INFO' }}",
+            "file": "monitoring.log",
+            "max_size_mb": 10,
+            "backup_count": 5
+          }
+        }
+        EOF
+        
+    - name: Upload production config as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: production-config
+        path: config.production.json
+        
+    - name: List files in build context
+      run: |
+        echo "Files in current directory:"
+        ls -la
+        echo ""
+        echo "Checking if Cargo.lock exists:"
+        test -f Cargo.lock && echo "Cargo.lock exists" || echo "Cargo.lock does NOT exist"
+        
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
@@ -135,18 +217,40 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
     
+    permissions:
+      contents: read
+      packages: read
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Download production config artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: production-config
       
     - name: Deploy to server
       uses: appleboy/ssh-action@v1.0.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
       with:
         host: ${{ secrets.PROD_HOST }}
         username: ${{ secrets.PROD_USER }}
-        password: ${{ secrets.PROD_PASSWORD }}
+        password: ${{ secrets.PROD_SSH_PASSWORD }}
         port: ${{ secrets.PROD_PORT || 22 }}
+        envs: GITHUB_TOKEN,GITHUB_ACTOR
         script: |
+          # Debug: Verify authentication method
+          echo "=== DEBUG: Authentication Method ==="
+          echo "Using SSH password authentication for production deployment"
+          echo "Connected to host: ${{ secrets.PROD_HOST }}"
+          echo "Username: ${{ secrets.PROD_USER }}"
+          echo "=================================="
+          
           # Set variables
           REPO=${{ github.repository }}
           REGISTRY=${{ env.REGISTRY }}
@@ -156,11 +260,82 @@ jobs:
           mkdir -p ~/performance-monitor
           cd ~/performance-monitor
           
-          # Pull latest docker-compose.yml
-          curl -o docker-compose.yml https://raw.githubusercontent.com/$REPO/main/docker-compose.yml
+          # Create docker-compose.yml file directly
+          echo "Creating docker-compose.yml for production deployment..."
+          echo "version: '3.8'" > docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "services:" >> docker-compose.yml
+          echo "  performance-monitor:" >> docker-compose.yml
+          echo "    image: ghcr.io/cipta-kreasi/server-monitoring:latest" >> docker-compose.yml
+          echo "    container_name: performance-monitor" >> docker-compose.yml
+          echo "    restart: unless-stopped" >> docker-compose.yml
+          echo "    volumes:" >> docker-compose.yml
+          echo "      # Mount Docker socket for monitoring containers" >> docker-compose.yml
+          echo "      - /var/run/docker.sock:/var/run/docker.sock:ro" >> docker-compose.yml
+          echo "      # Mount configuration file" >> docker-compose.yml
+          echo "      - ./config.production.json:/app/config.json:ro" >> docker-compose.yml
+          echo "      # Mount logs directory" >> docker-compose.yml
+          echo "      - ./logs:/app/logs" >> docker-compose.yml
+          echo "      # Mount proc and sys for system monitoring" >> docker-compose.yml
+          echo "      - /proc:/host/proc:ro" >> docker-compose.yml
+          echo "      - /sys:/host/sys:ro" >> docker-compose.yml
+          echo "    environment:" >> docker-compose.yml
+          echo "      - RUST_LOG=info" >> docker-compose.yml
+          echo "      - RUST_BACKTRACE=1" >> docker-compose.yml
+          echo "    privileged: true  # Required for system monitoring" >> docker-compose.yml
+          echo "    networks:" >> docker-compose.yml
+          echo "      - monitoring" >> docker-compose.yml
+          echo "    # Optional: Add resource limits" >> docker-compose.yml
+          echo "    deploy:" >> docker-compose.yml
+          echo "      resources:" >> docker-compose.yml
+          echo "        limits:" >> docker-compose.yml
+          echo "          cpus: '0.5'" >> docker-compose.yml
+          echo "          memory: 256M" >> docker-compose.yml
+          echo "        reservations:" >> docker-compose.yml
+          echo "          cpus: '0.1'" >> docker-compose.yml
+          echo "          memory: 128M" >> docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "networks:" >> docker-compose.yml
+          echo "  monitoring:" >> docker-compose.yml
+          echo "    driver: bridge" >> docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "volumes:" >> docker-compose.yml
+          echo "  logs:" >> docker-compose.yml
+          echo "    driver: local" >> docker-compose.yml
           
-          # Update image tag in docker-compose.yml
-          sed -i "s|image: performance-monitor:latest|image: $REGISTRY/$REPO:$IMAGE_TAG|g" docker-compose.yml
+          echo "Successfully created docker-compose.yml"
+          
+          # Create production config file on server
+          echo "Creating production config file..."
+          cat > config.production.json << EOF
+          {
+            "monitoring": {
+              "cpu_threshold": 80,
+              "check_interval": 300,
+              "docker_stats_timeout": 10
+            },
+            "email": {
+              "enabled": true,
+              "smtp_server": "${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}",
+              "smtp_port": ${{ secrets.SMTP_PORT || '587' }},
+              "sender_email": "${{ secrets.SENDER_EMAIL || 'your-email@gmail.com' }}",
+              "sender_password": "${{ secrets.SENDER_PASSWORD || 'your-app-password' }}",
+              "recipient_email": "${{ secrets.RECIPIENT_EMAIL || 'alert-email@example.com' }}"
+            },
+            "logging": {
+              "level": "${{ secrets.LOG_LEVEL || 'INFO' }}",
+              "file": "monitoring.log",
+              "max_size_mb": 10,
+              "backup_count": 5
+            }
+          }
+          EOF
+          
+          echo "Production config file created successfully"
+          
+          # Login to GitHub Container Registry
+          echo "Logging in to GitHub Container Registry..."
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           
           # Pull latest images
           docker-compose pull
@@ -175,8 +350,13 @@ jobs:
           # Check service status
           docker-compose ps
           
-          # Show logs
-          docker-compose logs --tail=20 performance-monitor
+          # Show detailed logs for debugging
+          echo "=== Container Status ==="
+          docker ps -a | grep performance-monitor
+          echo "=== Container Logs (last 50 lines) ==="
+          docker-compose logs --tail=50 performance-monitor
+          echo "=== Container Inspect (restart info) ==="
+          docker inspect performance-monitor | grep -A10 -B5 "RestartCount\|State\|Status"
           
           echo "Deployment completed successfully!"
 
@@ -188,18 +368,35 @@ jobs:
     if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
     environment: staging
     
+    permissions:
+      contents: read
+      packages: read
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
       
     - name: Deploy to staging server
       uses: appleboy/ssh-action@v1.0.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
       with:
         host: ${{ secrets.STAGING_HOST }}
         username: ${{ secrets.STAGING_USER }}
-        password: ${{ secrets.STAGING_PASSWORD }}
+        password: ${{ secrets.STAGING_SSH_PASSWORD }}
         port: ${{ secrets.STAGING_PORT || 22 }}
+        envs: GITHUB_TOKEN,GITHUB_ACTOR
         script: |
+          # Debug: Verify authentication method
+          echo "=== DEBUG: Authentication Method ==="
+          echo "Using SSH password authentication for staging deployment"
+          echo "Connected to host: ${{ secrets.STAGING_HOST }}"
+          echo "Username: ${{ secrets.STAGING_USER }}"
+          echo "=================================="
+          
           # Set variables
           REPO=${{ github.repository }}
           REGISTRY=${{ env.REGISTRY }}
@@ -209,14 +406,82 @@ jobs:
           mkdir -p ~/performance-monitor-staging
           cd ~/performance-monitor-staging
           
-          # Pull latest docker-compose.yml
-          curl -o docker-compose.yml https://raw.githubusercontent.com/$REPO/main/docker-compose.yml
+          # Create docker-compose.yml file directly for staging
+          echo "Creating docker-compose.yml for staging deployment..."
+          echo "version: '3.8'" > docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "services:" >> docker-compose.yml
+          echo "  performance-monitor:" >> docker-compose.yml
+          echo "    image: ghcr.io/cipta-kreasi/server-monitoring:develop" >> docker-compose.yml
+          echo "    container_name: performance-monitor-staging" >> docker-compose.yml
+          echo "    restart: unless-stopped" >> docker-compose.yml
+          echo "    volumes:" >> docker-compose.yml
+          echo "      # Mount Docker socket for monitoring containers" >> docker-compose.yml
+          echo "      - /var/run/docker.sock:/var/run/docker.sock:ro" >> docker-compose.yml
+          echo "      # Mount configuration file" >> docker-compose.yml
+          echo "      - ./config.staging.json:/app/config.json:ro" >> docker-compose.yml
+          echo "      # Mount logs directory" >> docker-compose.yml
+          echo "      - ./logs-staging:/app/logs" >> docker-compose.yml
+          echo "      # Mount proc and sys for system monitoring" >> docker-compose.yml
+          echo "      - /proc:/host/proc:ro" >> docker-compose.yml
+          echo "      - /sys:/host/sys:ro" >> docker-compose.yml
+          echo "    environment:" >> docker-compose.yml
+          echo "      - RUST_LOG=info" >> docker-compose.yml
+          echo "      - RUST_BACKTRACE=1" >> docker-compose.yml
+          echo "    privileged: true  # Required for system monitoring" >> docker-compose.yml
+          echo "    networks:" >> docker-compose.yml
+          echo "      - monitoring" >> docker-compose.yml
+          echo "    # Optional: Add resource limits" >> docker-compose.yml
+          echo "    deploy:" >> docker-compose.yml
+          echo "      resources:" >> docker-compose.yml
+          echo "        limits:" >> docker-compose.yml
+          echo "          cpus: '0.5'" >> docker-compose.yml
+          echo "          memory: 256M" >> docker-compose.yml
+          echo "        reservations:" >> docker-compose.yml
+          echo "          cpus: '0.1'" >> docker-compose.yml
+          echo "          memory: 128M" >> docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "networks:" >> docker-compose.yml
+          echo "  monitoring:" >> docker-compose.yml
+          echo "    driver: bridge" >> docker-compose.yml
+          echo "" >> docker-compose.yml
+          echo "volumes:" >> docker-compose.yml
+          echo "  logs:" >> docker-compose.yml
+          echo "    driver: local" >> docker-compose.yml
           
-          # Update image tag and container names for staging
-          sed -i "s|image: performance-monitor:latest|image: $REGISTRY/$REPO:$IMAGE_TAG|g" docker-compose.yml
-          sed -i "s|container_name: performance-monitor|container_name: performance-monitor-staging|g" docker-compose.yml
-          sed -i "s|container_name: monitor-log-rotate|container_name: monitor-log-rotate-staging|g" docker-compose.yml
-          sed -i "s|./logs|./logs-staging|g" docker-compose.yml
+          echo "Successfully created docker-compose.yml"
+          
+          # Create staging config file on server
+          echo "Creating staging config file..."
+          cat > config.staging.json << EOF
+          {
+            "monitoring": {
+              "cpu_threshold": 70,
+              "check_interval": 60,
+              "docker_stats_timeout": 5
+            },
+            "email": {
+              "enabled": false,
+              "smtp_server": "smtp.gmail.com",
+              "smtp_port": "587",
+              "sender_email": "your-email@gmail.com",
+              "sender_password": "your-app-password",
+              "recipient_email": "alert-email@example.com"
+            },
+            "logging": {
+              "level": "DEBUG",
+              "file": "monitoring.log",
+              "max_size_mb": 5,
+              "backup_count": 3
+            }
+          }
+          EOF
+          
+          echo "Staging config file created successfully"
+          
+          # Login to GitHub Container Registry
+          echo "Logging in to GitHub Container Registry..."
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           
           # Pull latest images
           docker-compose pull

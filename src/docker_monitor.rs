@@ -1,12 +1,13 @@
-use serde::{Deserialize, Serialize};
-use bollard::Docker;
-use bollard::container::{StatsOptions};
-use bollard::models::{ContainerSummary, ContainerInspectResponse};
-use chrono::{DateTime, Utc};
 use crate::config::Config;
-use log::{info, error, warn};
-use anyhow::{Result, anyhow};
+use crate::timezone_utils;
+use anyhow::{anyhow, Result};
+use bollard::container::StatsOptions;
+use bollard::models::{ContainerInspectResponse, ContainerSummary};
+use bollard::Docker;
+use chrono::{DateTime, FixedOffset};
 use futures_util::StreamExt;
+use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerStats {
@@ -19,7 +20,7 @@ pub struct ContainerStats {
     pub memory_limit: u64,
     pub memory_percent: f64,
     pub ports: Vec<String>,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<FixedOffset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -45,7 +46,7 @@ pub struct DockerMonitor {
 impl DockerMonitor {
     pub async fn new(config: Config) -> Result<Self> {
         let docker = Docker::connect_with_local_defaults()?;
-        
+
         // Test connection
         match docker.ping().await {
             Ok(_) => info!("Connected to Docker daemon successfully"),
@@ -54,53 +55,58 @@ impl DockerMonitor {
                 return Err(anyhow!("Docker connection failed: {}", e));
             }
         }
-        
-        Ok(Self {
-            docker,
-            config,
-        })
+
+        Ok(Self { docker, config })
     }
-    
+
     pub async fn get_container_stats(&self) -> Result<Vec<ContainerStats>> {
         let containers = self.docker.list_containers::<String>(None).await?;
         let mut container_stats = Vec::new();
-        
+
         for container in containers {
             match self.get_single_container_stats(&container).await {
                 Ok(stats) => container_stats.push(stats),
                 Err(e) => {
-                    error!("Error getting stats for container {:?}: {}", container.id, e);
+                    error!(
+                        "Error getting stats for container {:?}: {}",
+                        container.id, e
+                    );
                     continue;
                 }
             }
         }
-        
+
         // Sort by CPU usage (highest first)
         container_stats.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
-        
+
         Ok(container_stats)
     }
-    
-    async fn get_single_container_stats(&self, container: &ContainerSummary) -> Result<ContainerStats> {
+
+    async fn get_single_container_stats(
+        &self,
+        container: &ContainerSummary,
+    ) -> Result<ContainerStats> {
         let id = container.id.as_deref().unwrap_or("unknown");
-        let name = container.names.as_ref()
+        let name = container
+            .names
+            .as_ref()
             .and_then(|names| names.first())
             .map(|s| s.strip_prefix('/').unwrap_or(s))
             .unwrap_or("unknown")
             .to_string();
-        
+
         let image = container.image.as_deref().unwrap_or("unknown").to_string();
         let status = container.status.as_deref().unwrap_or("unknown").to_string();
-        
+
         // Get ports - simplified implementation
         let ports = Vec::new();
         // For now, skip port parsing to avoid type issues
         // In production, you would implement proper port parsing
-        
+
         // Get CPU and memory stats
-        let (cpu_usage, memory_usage, memory_limit, memory_percent) = 
+        let (cpu_usage, memory_usage, memory_limit, memory_percent) =
             self.calculate_resource_usage(container).await?;
-        
+
         Ok(ContainerStats {
             id: id.chars().take(12).collect(),
             name,
@@ -111,25 +117,31 @@ impl DockerMonitor {
             memory_limit,
             memory_percent,
             ports,
-            timestamp: Utc::now(),
+            timestamp: timezone_utils::now_wib(),
         })
     }
-    
-    async fn calculate_resource_usage(&self, container: &ContainerSummary) -> Result<(f64, u64, u64, f64)> {
-        let container_id = container.id.as_ref().ok_or_else(|| anyhow!("No container id"))?;
-        
+
+    async fn calculate_resource_usage(
+        &self,
+        container: &ContainerSummary,
+    ) -> Result<(f64, u64, u64, f64)> {
+        let container_id = container
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow!("No container id"))?;
+
         let mut stats_stream = self.docker.stats(
             container_id,
             Some(StatsOptions {
                 stream: false,
                 one_shot: true,
-            })
+            }),
         );
-        
+
         if let Some(Ok(stats)) = stats_stream.next().await {
             // Calculate CPU usage - simplified
             let cpu_usage = self.calculate_cpu_usage(&stats)?;
-            
+
             // Calculate memory usage
             let memory_usage = stats.memory_stats.usage.unwrap_or(0);
             let memory_limit = stats.memory_stats.limit.unwrap_or(0);
@@ -138,52 +150,89 @@ impl DockerMonitor {
             } else {
                 0.0
             };
-            
+
             Ok((cpu_usage, memory_usage, memory_limit, memory_percent))
         } else {
             Ok((0.0, 0, 0, 0.0))
         }
     }
-    
-    fn calculate_cpu_usage(&self, _stats: &bollard::container::Stats) -> Result<f64> {
-        // Simplified CPU calculation - return 0.0 for now
-        // In production, you would implement proper CPU calculation
-        Ok(0.0)
+
+    fn calculate_cpu_usage(&self, stats: &bollard::container::Stats) -> Result<f64> {
+        // Calculate CPU usage based on Docker stats
+        let cpu_delta = stats
+            .cpu_stats
+            .cpu_usage
+            .total_usage
+            .saturating_sub(stats.precpu_stats.cpu_usage.total_usage)
+            as f64;
+
+        let system_delta = stats
+            .cpu_stats
+            .system_cpu_usage
+            .unwrap_or(0)
+            .saturating_sub(stats.precpu_stats.system_cpu_usage.unwrap_or(0))
+            as f64;
+
+        let online_cpus = stats.cpu_stats.online_cpus.unwrap_or(1) as f64;
+
+        if system_delta > 0.0 && cpu_delta >= 0.0 {
+            let cpu_percent = (cpu_delta / system_delta) * online_cpus * 100.0;
+            Ok(cpu_percent.clamp(0.0, 100.0))
+        } else {
+            // Fallback: simple calculation based on available data
+            let total_usage = stats.cpu_stats.cpu_usage.total_usage as f64;
+            if total_usage > 0.0 {
+                // Simple estimation - this is not perfect but better than 0
+                let estimated_percent = (total_usage / 1_000_000_000.0).clamp(0.0, 100.0);
+                Ok(estimated_percent)
+            } else {
+                Ok(0.0)
+            }
+        }
     }
-    
+
     #[allow(dead_code)]
     pub async fn get_top_cpu_containers(&self, limit: usize) -> Result<Vec<ContainerStats>> {
         let mut all_stats = self.get_container_stats().await?;
         all_stats.truncate(limit);
         Ok(all_stats)
     }
-    
-    pub async fn check_container_cpu_threshold(&self, threshold: f64) -> Result<(bool, Vec<ContainerStats>)> {
+
+    pub async fn check_container_cpu_threshold(
+        &self,
+        threshold: f64,
+    ) -> Result<(bool, Vec<ContainerStats>)> {
         let container_stats = self.get_container_stats().await?;
         let high_cpu_containers: Vec<ContainerStats> = container_stats
             .into_iter()
             .filter(|container| container.cpu_usage > threshold)
             .collect();
-        
+
         let has_high_cpu = !high_cpu_containers.is_empty();
-        
+
         if has_high_cpu {
-            warn!("High CPU usage detected in {} containers", high_cpu_containers.len());
+            warn!(
+                "High CPU usage detected in {} containers",
+                high_cpu_containers.len()
+            );
             for container in &high_cpu_containers {
-                warn!("Container {}: {:.2}% CPU", container.name, container.cpu_usage);
+                warn!(
+                    "Container {}: {:.2}% CPU",
+                    container.name, container.cpu_usage
+                );
             }
         } else {
             info!("All containers have normal CPU usage");
         }
-        
+
         Ok((has_high_cpu, high_cpu_containers))
     }
-    
+
     #[allow(dead_code)]
     pub async fn get_container_info(&self) -> Result<Vec<ContainerInspectResponse>> {
         let containers = self.docker.list_containers::<String>(None).await?;
         let mut container_info = Vec::new();
-        
+
         for container in containers {
             if let Some(id) = container.id {
                 match self.docker.inspect_container(&id, None).await {
@@ -195,14 +244,14 @@ impl DockerMonitor {
                 }
             }
         }
-        
+
         Ok(container_info)
     }
-    
+
     pub async fn get_docker_system_info(&self) -> Result<DockerSystemInfo> {
         let info = self.docker.info().await?;
         let version = self.docker.version().await?;
-        
+
         Ok(DockerSystemInfo {
             version: version.version.unwrap_or_else(|| "unknown".to_string()),
             api_version: version.api_version.unwrap_or_else(|| "unknown".to_string()),
